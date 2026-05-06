@@ -1,0 +1,75 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+name: Publish Provider Packages
+on:  # yamllint disable-line rule:truthy
+  push:
+    tags:
+      - "providers/v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    name: Build and publish provider wheels
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: "Install uv"
+        run: |
+          UV_VERSION=$(sed -n '/^name = "uv"$/{n;s/^version = "\(.*\)"$/\1/p;}' uv.lock)
+          if [[ -z "${UV_VERSION}" ]]; then
+            echo "Failed to extract uv version from uv.lock" >&2
+            exit 1
+          fi
+          echo "Installing uv==${UV_VERSION}"
+          pip install "uv==${UV_VERSION}"
+
+      - name: "Install hatch"
+        run: |
+          uv tool uninstall hatch || true
+          uv tool install hatch==1.16.5
+
+      - name: "Build provider wheels"
+        run: |
+          for provider_dir in providers/*/; do
+            if [[ -f "${provider_dir}pyproject.toml" ]]; then
+              echo "--- Building ${provider_dir} ---"
+              (cd "${provider_dir}" && hatch build --clean)
+            fi
+          done
+
+      - name: "Verify wheels with twine"
+        run: |
+          uv tool uninstall twine || true
+          uv tool install twine
+          twine check providers/*/dist/*.whl
+
+      - name: "Publish to internal PyPI"
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.INTERNAL_PYPI_TOKEN }}
+          TWINE_REPOSITORY_URL: https://pypi.corp.example.com/simple/
+        run: twine upload providers/*/dist/*.whl

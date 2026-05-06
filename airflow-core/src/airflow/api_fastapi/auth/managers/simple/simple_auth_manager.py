@@ -18,10 +18,14 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
+import hmac
 import json
 import logging
 import os
 import random
+import secrets
+from base64 import b64decode, b64encode
 from collections import namedtuple
 from enum import Enum
 from json import JSONDecodeError
@@ -58,6 +62,33 @@ if TYPE_CHECKING:
     )
 
 log = logging.getLogger(__name__)
+
+_PBKDF2_ITERATIONS = 260_000
+_HASH_MARKER = "$pbkdf2-sha256$"
+
+
+def _hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, _PBKDF2_ITERATIONS)
+    return f"{_HASH_MARKER}{_PBKDF2_ITERATIONS}${b64encode(salt).decode()}${b64encode(dk).decode()}"
+
+
+def _verify_password_hash(stored: str, candidate: str) -> bool:
+    if not stored.startswith(_HASH_MARKER):
+        return False
+    # stored format: "$pbkdf2-sha256$<iterations>$<b64salt>$<b64hash>"
+    # split("$") → ['', 'pbkdf2-sha256', '<iterations>', '<b64salt>', '<b64hash>']
+    parts = stored.split("$")
+    if len(parts) != 5:
+        return False
+    try:
+        iterations = int(parts[2])
+        salt = b64decode(parts[3])
+        expected = b64decode(parts[4])
+    except Exception:
+        return False
+    candidate_dk = hashlib.pbkdf2_hmac("sha256", candidate.encode(), salt, iterations)
+    return hmac.compare_digest(candidate_dk, expected)
 
 
 class SimpleAuthManagerRole(namedtuple("SimpleAuthManagerRole", "name order"), Enum):
@@ -155,6 +186,52 @@ class SimpleAuthManager(BaseAuthManager[SimpleAuthManagerUser]):
         except BlockingIOError:
             # The file is locked, another process called this method already, skipping
             pass
+
+    def register_local_user(self, username: str, password: str) -> None:
+        """
+        Store a PBKDF2-SHA256 hash of ``password`` for ``username`` in the passwords file.
+
+        If the username already exists its entry is overwritten. The user must
+        still be listed in ``[core] simple_auth_manager_users`` (or equivalent
+        config) for the auth manager to recognise them at login time.
+
+        .. note::
+            The login service (``services/login.py``) currently verifies
+            passwords with a plaintext ``==`` comparison. For users registered
+            here to authenticate through the login form, that comparison must be
+            replaced with a call to :meth:`authenticate_local_user`.
+        """
+        password_file = self.get_generated_password_file()
+        with open(password_file, "a+") as file:
+            fcntl.flock(file, fcntl.LOCK_EX)
+            try:
+                passwords = self._get_passwords(file)
+                passwords[username] = _hash_password(password)
+                file.seek(0)
+                file.truncate()
+                file.write(json.dumps(passwords) + "\n")
+            finally:
+                fcntl.flock(file, fcntl.LOCK_UN)
+
+    def authenticate_local_user(self, username: str, password: str) -> bool:
+        """
+        Return ``True`` if ``password`` matches the PBKDF2-SHA256 hash stored for ``username``.
+
+        Only succeeds for entries written by :meth:`register_local_user`. Returns
+        ``False`` when the username is absent from the file or its stored value is
+        not a recognised hash (e.g. a plaintext auto-generated entry from
+        :meth:`init`).
+        """
+        password_file = self.get_generated_password_file()
+        try:
+            with open(password_file) as file:
+                passwords = self._get_passwords(file)
+        except FileNotFoundError:
+            return False
+        stored = passwords.get(username)
+        if not stored:
+            return False
+        return _verify_password_hash(stored, password)
 
     def get_url_login(self, **kwargs) -> str:
         """Return the login page url."""

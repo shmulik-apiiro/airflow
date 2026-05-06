@@ -47,12 +47,14 @@ __all__ = [
     "JWKS",
     "JWTGenerator",
     "JWTValidator",
+    "TokenClaims",
     "generate_private_key",
     "get_sig_validation_args",
     "get_signing_args",
     "get_signing_key",
     "key_to_pem",
     "key_to_jwk_dict",
+    "peek_claims",
 ]
 
 
@@ -61,6 +63,15 @@ class InvalidClaimError(ValueError):
 
     def __init__(self, claim: str):
         super().__init__(f"Invalid claim: {claim}")
+
+
+@attrs.define
+class TokenClaims:
+    """Claims extracted from a JWT payload without signature verification."""
+
+    sub: str | None
+    exp: int | None
+    tenant: str | None
 
 
 def key_to_jwk_dict(key: AllowedKeys, kid: str | None = None):
@@ -532,6 +543,36 @@ def base64url_encode(payload):
         payload = payload.encode("utf-8")
     encode = urlsafe_b64encode(payload)
     return encode.decode("utf-8").rstrip("=")
+
+
+_PEEK_ALGORITHMS = [
+    "RS256", "RS384", "RS512",
+    "ES256", "ES384", "ES512",
+    "HS256", "HS384", "HS512",
+    "EdDSA",
+]
+
+
+def peek_claims(token: str) -> TokenClaims:
+    """
+    Extract sub, exp, and tenant from a JWT without verifying the signature.
+
+    The gateway is expected to have already validated the token before it reaches this layer,
+    so we skip the JWKS round-trip and just parse the payload.
+
+    Raises jwt.DecodeError if the token is structurally malformed.
+    """
+    payload = jwt.decode(
+        token,
+        key="",
+        algorithms=_PEEK_ALGORITHMS,
+        options={"verify_signature": False},
+    )
+    return TokenClaims(
+        sub=payload.get("sub"),
+        exp=payload.get("exp"),
+        tenant=payload.get("tenant"),
+    )
 
 
 def get_signing_key(section: str, key: str, make_secret_key_if_needed: bool = True) -> str:

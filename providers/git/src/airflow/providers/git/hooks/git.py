@@ -23,6 +23,7 @@ import logging
 import os
 import shlex
 import stat
+import subprocess
 import tempfile
 from typing import Any
 from urllib.parse import quote as urlquote
@@ -217,3 +218,49 @@ class GitHook(BaseHook):
         else:
             self.set_git_env(self.key_file)
             yield
+
+    def clone_and_resolve(self, repo_url: str, branch: str, target_dir: str) -> str:
+        """
+        Clone ``repo_url`` at ``branch`` into ``target_dir`` and return the HEAD commit SHA.
+
+        Uses the connection's authentication (SSH key or ``GIT_SSH_COMMAND``) configured by
+        :meth:`configure_hook_env`. ``target_dir`` must not already exist.
+
+        :param repo_url: Git repository URL to clone.
+        :param branch: Branch to check out.
+        :param target_dir: Local directory to clone into.
+        :returns: Full SHA-1 of the cloned HEAD commit.
+        :raises AirflowException: If the clone or SHA resolution fails.
+        """
+        with self.configure_hook_env():
+            env = {**os.environ, **self.env}
+
+            self.log.info("Cloning %s (branch=%s) into %s", repo_url, branch, target_dir)
+            clone_result = subprocess.run(
+                [
+                    "git", "clone",
+                    "--branch", branch,
+                    "--single-branch",
+                    "--depth", "1",
+                    repo_url,
+                    target_dir,
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            if clone_result.returncode != 0:
+                raise AirflowException(f"git clone failed: {clone_result.stderr.strip()}")
+
+            sha_result = subprocess.run(
+                ["git", "-C", target_dir, "rev-parse", "HEAD"],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            if sha_result.returncode != 0:
+                raise AirflowException(f"git rev-parse HEAD failed: {sha_result.stderr.strip()}")
+
+            sha = sha_result.stdout.strip()
+            self.log.info("Resolved %s %s to %s", repo_url, branch, sha)
+            return sha

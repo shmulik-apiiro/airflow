@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Annotated, Literal, cast
+from uuid import UUID
 
 import structlog
 from fastapi import Depends, HTTPException, Query, status
@@ -26,7 +27,8 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import joinedload
 from sqlalchemy.sql.selectable import Select
 
-from airflow.api_fastapi.auth.managers.models.resource_details import DagAccessEntity
+from airflow.api_fastapi.app import get_auth_manager
+from airflow.api_fastapi.auth.managers.models.resource_details import DagAccessEntity, DagDetails
 from airflow.api_fastapi.common.cursors import (
     apply_cursor_filter,
     encode_cursor,
@@ -118,6 +120,49 @@ log = structlog.get_logger(__name__)
 
 task_instances_router = AirflowRouter(tags=["Task Instance"], prefix="/dags/{dag_id}")
 task_instances_prefix = "/dagRuns/{dag_run_id}/taskInstances"
+
+task_instances_by_id_router = AirflowRouter(tags=["Task Instance"], prefix="/taskInstances")
+
+
+@task_instances_by_id_router.get(
+    "/{task_instance_id}",
+    responses=create_openapi_http_exception_doc(
+        [status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND]
+    ),
+)
+def get_task_instance_by_id(
+    task_instance_id: UUID,
+    session: SessionDep,
+    user: GetUserDep,
+) -> TaskInstanceResponse:
+    """Get task instance by ID."""
+    query = (
+        select(TI)
+        .where(TI.id == task_instance_id)
+        .options(joinedload(TI.rendered_task_instance_fields))
+        .options(joinedload(TI.dag_version))
+        .options(joinedload(TI.dag_run).options(joinedload(DagRun.dag_model)))
+    )
+    task_instance = session.scalar(query)
+
+    if task_instance is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"The Task Instance with id: `{task_instance_id}` was not found",
+        )
+
+    if not get_auth_manager().is_authorized_dag(
+        method="GET",
+        access_entity=DagAccessEntity.TASK_INSTANCE,
+        details=DagDetails(id=task_instance.dag_id),
+        user=user,
+    ):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "User is not authorized to read task instances for this DAG",
+        )
+
+    return task_instance
 
 
 @task_instances_router.get(
