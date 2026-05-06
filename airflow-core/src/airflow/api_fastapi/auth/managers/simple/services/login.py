@@ -52,11 +52,11 @@ class SimpleAuthManagerLogin:
             )
 
         users = SimpleAuthManager.get_users()
-        passwords = SimpleAuthManager.get_passwords()
         found_users = [
             user
             for user in users
-            if user.username == body.username and passwords[user.username] == body.password
+            if user.username == body.username
+            and SimpleAuthManager.authenticate_local_user(user.username, body.password)
         ]
 
         if len(found_users) == 0:

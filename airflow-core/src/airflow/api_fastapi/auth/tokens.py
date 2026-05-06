@@ -47,12 +47,14 @@ __all__ = [
     "JWKS",
     "JWTGenerator",
     "JWTValidator",
+    "TokenClaims",
     "generate_private_key",
     "get_sig_validation_args",
     "get_signing_args",
     "get_signing_key",
     "key_to_pem",
     "key_to_jwk_dict",
+    "peek_claims",
 ]
 
 
@@ -61,6 +63,31 @@ class InvalidClaimError(ValueError):
 
     def __init__(self, claim: str):
         super().__init__(f"Invalid claim: {claim}")
+
+
+@attrs.define
+class TokenClaims:
+    """Unverified claims extracted from a JWT for lightweight inspection."""
+
+    sub: str | None
+    exp: int | None
+    tenant: str | None
+
+
+def peek_claims(token: str) -> TokenClaims:
+    """
+    Decode a JWT without signature verification to extract claims for inspection.
+
+    Intended for use behind a gateway that has already validated the token.
+    Raises ``jwt.DecodeError`` if the token is structurally malformed.
+    """
+    # verify_signature=False also disables exp/nbf/aud/iss checks in PyJWT >= 2.x
+    claims = jwt.decode(token, options={"verify_signature": False})
+    return TokenClaims(
+        sub=claims.get("sub"),
+        exp=claims.get("exp"),
+        tenant=claims.get("tenant"),
+    )
 
 
 def key_to_jwk_dict(key: AllowedKeys, kid: str | None = None):

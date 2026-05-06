@@ -25,6 +25,7 @@ from airflow.providers.fab.auth_manager.api_fastapi.datamodels.users import (
     UserBody,
     UserCollectionResponse,
     UserPatchBody,
+    UserPreferencesPatchBody,
     UserResponse,
 )
 from airflow.providers.fab.auth_manager.api_fastapi.sorting import build_ordering
@@ -197,6 +198,34 @@ class FABAuthManagerUsers:
         if "first_name" in fields_to_update and body.first_name is not None:
             user.first_name = body.first_name
         if "last_name" in fields_to_update and body.last_name is not None:
+            user.last_name = body.last_name
+
+        security_manager.update_user(user)
+        return UserResponse.model_validate(user)
+
+    @classmethod
+    def update_user_preferences(cls, username: str, body: UserPreferencesPatchBody) -> UserResponse:
+        """Update a user's own profile preferences (display name, email)."""
+        security_manager = get_fab_auth_manager().security_manager
+
+        user = security_manager.find_user(username=username)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"The User with username `{username}` was not found",
+            )
+
+        if body.email is not None and body.email != user.email:
+            if security_manager.find_user(email=body.email):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"The email `{body.email}` already exists",
+                )
+            user.email = body.email
+
+        if body.first_name is not None:
+            user.first_name = body.first_name
+        if body.last_name is not None:
             user.last_name = body.last_name
 
         security_manager.update_user(user)

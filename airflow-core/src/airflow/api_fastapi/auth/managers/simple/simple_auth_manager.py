@@ -18,6 +18,8 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -58,6 +60,9 @@ if TYPE_CHECKING:
     )
 
 log = logging.getLogger(__name__)
+
+_PBKDF2_HASH = "sha256"
+_PBKDF2_ITERATIONS = 260_000
 
 
 class SimpleAuthManagerRole(namedtuple("SimpleAuthManagerRole", "name order"), Enum):
@@ -441,6 +446,49 @@ class SimpleAuthManager(BaseAuthManager[SimpleAuthManagerUser]):
     @staticmethod
     def _generate_password() -> str:
         return "".join(random.choices("abcdefghkmnpqrstuvwxyzABCDEFGHKMNPQRSTUVWXYZ23456789", k=16))
+
+    @staticmethod
+    def _hash_password(password: str) -> str:
+        salt = os.urandom(16)
+        dk = hashlib.pbkdf2_hmac(_PBKDF2_HASH, password.encode("utf-8"), salt, _PBKDF2_ITERATIONS)
+        return f"pbkdf2:{_PBKDF2_HASH}:{_PBKDF2_ITERATIONS}:{salt.hex()}:{dk.hex()}"
+
+    @staticmethod
+    def _verify_password(password: str, stored: str) -> bool:
+        if stored.startswith("pbkdf2:"):
+            try:
+                _, algo, iterations_str, salt_hex, hash_hex = stored.split(":", 4)
+                iterations = int(iterations_str)
+                salt = bytes.fromhex(salt_hex)
+                expected = bytes.fromhex(hash_hex)
+                dk = hashlib.pbkdf2_hmac(algo, password.encode("utf-8"), salt, iterations)
+                return hmac.compare_digest(dk, expected)
+            except (ValueError, AttributeError):
+                return False
+        return hmac.compare_digest(stored, password)
+
+    def register_local_user(self, username: str, password: str) -> None:
+        """Store a PBKDF2-hashed password for *username* in the passwords file."""
+        password_file = self.get_generated_password_file()
+        with open(password_file, "a+") as file:
+            fcntl.flock(file, fcntl.LOCK_EX)
+            try:
+                passwords = self._get_passwords(stream=file)
+                passwords[username] = self._hash_password(password)
+                file.seek(0)
+                file.truncate()
+                file.write(json.dumps(passwords) + "\n")
+            finally:
+                fcntl.flock(file, fcntl.LOCK_UN)
+
+    @staticmethod
+    def authenticate_local_user(username: str, password: str) -> bool:
+        """Return True if *password* matches the stored credential for *username*."""
+        passwords = SimpleAuthManager.get_passwords()
+        stored = passwords.get(username)
+        if stored is None:
+            return False
+        return SimpleAuthManager._verify_password(password, stored)
 
     @staticmethod
     def _print_output(output: str):

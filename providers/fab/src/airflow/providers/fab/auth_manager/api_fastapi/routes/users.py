@@ -16,13 +16,17 @@
 # under the License.
 from __future__ import annotations
 
-from fastapi import Depends, Path, Query, status
+from fastapi import Depends, HTTPException, Path, Query, status
 
+from airflow.api_fastapi.app import get_auth_manager
+from airflow.api_fastapi.auth.managers.models.base_user import BaseUser
 from airflow.api_fastapi.core_api.openapi.exceptions import create_openapi_http_exception_doc
+from airflow.api_fastapi.core_api.security import get_user
 from airflow.providers.fab.auth_manager.api_fastapi.datamodels.users import (
     UserBody,
     UserCollectionResponse,
     UserPatchBody,
+    UserPreferencesPatchBody,
     UserResponse,
 )
 from airflow.providers.fab.auth_manager.api_fastapi.parameters import get_effective_limit
@@ -111,6 +115,32 @@ def update_user(
     """Update an existing user."""
     with get_application_builder():
         return FABAuthManagerUsers.update_user(username=username, body=body, update_mask=update_mask)
+
+
+@fab_router.patch(
+    "/users/{username}/preferences",
+    responses=create_openapi_http_exception_doc(
+        [
+            status.HTTP_400_BAD_REQUEST,
+            status.HTTP_401_UNAUTHORIZED,
+            status.HTTP_403_FORBIDDEN,
+            status.HTTP_404_NOT_FOUND,
+            status.HTTP_409_CONFLICT,
+        ]
+    ),
+)
+def update_user_preferences(
+    body: UserPreferencesPatchBody,
+    username: str = Path(..., min_length=1),
+    current_user: BaseUser = Depends(get_user),
+) -> UserResponse:
+    """Update the authenticated user's own profile preferences."""
+    if current_user.get_name() != username and not get_auth_manager().is_authorized_custom_view(
+        method="PUT", resource_name=permissions.RESOURCE_USER, user=current_user
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    with get_application_builder():
+        return FABAuthManagerUsers.update_user_preferences(username=username, body=body)
 
 
 @fab_router.delete(

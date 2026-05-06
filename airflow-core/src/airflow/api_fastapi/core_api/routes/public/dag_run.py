@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import textwrap
 from typing import Annotated, Literal, cast
 
@@ -110,6 +112,98 @@ from airflow.utils.types import DagRunTriggeredByType, DagRunType
 log = structlog.get_logger(__name__)
 
 dag_run_router = AirflowRouter(tags=["DagRun"], prefix="/dags/{dag_id}/dagRuns")
+
+_EXPORT_SORT_COLUMNS = {
+    "id": DagRun.id,
+    "run_id": DagRun.run_id,
+    "state": DagRun.state,
+    "logical_date": DagRun.logical_date,
+    "run_after": DagRun.run_after,
+    "start_date": DagRun.start_date,
+    "end_date": DagRun.end_date,
+    "duration": DagRun.duration,
+    "run_type": DagRun.run_type,
+}
+
+_EXPORT_CSV_HEADERS = [
+    "dag_id",
+    "run_id",
+    "state",
+    "logical_date",
+    "start_date",
+    "end_date",
+    "duration",
+    "run_type",
+    "triggered_by",
+    "triggering_user_name",
+    "conf",
+]
+
+
+# /export must be registered before /{dag_run_id} so Starlette's sequential route
+# matching does not capture the literal "export" as a run_id path parameter.
+@dag_run_router.get(
+    "/export",
+    responses={
+        status.HTTP_200_OK: {
+            "content": {"text/csv": {}},
+            "description": "CSV export of all DAG runs for the given DAG.",
+        },
+        **create_openapi_http_exception_doc([status.HTTP_400_BAD_REQUEST]),
+    },
+    dependencies=[Depends(requires_access_dag(method="GET", access_entity=DagAccessEntity.RUN))],
+)
+def export_dag_runs(
+    dag_id: str,
+    session: SessionDep,
+    sort_by: str = Query(
+        "start_date",
+        description=f"Field to sort by. Allowed: {', '.join(sorted(_EXPORT_SORT_COLUMNS))}.",
+    ),
+    order: Literal["asc", "desc"] = Query("asc", description="Sort direction."),
+) -> StreamingResponse:
+    """Export all runs for a DAG as a CSV file."""
+    col = _EXPORT_SORT_COLUMNS.get(sort_by)
+    if col is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Invalid sort_by value: `{sort_by}`. Allowed: {sorted(_EXPORT_SORT_COLUMNS)}",
+        )
+    ordering = col.asc() if order == "asc" else col.desc()
+    # Materialize rows while the session is still open; the generator below runs
+    # after the handler returns and cannot safely use a SessionDep-managed session.
+    runs = session.scalars(select(DagRun).where(DagRun.dag_id == dag_id).order_by(ordering)).all()
+
+    def _generate_csv():
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(_EXPORT_CSV_HEADERS)
+        yield buf.getvalue()
+        for run in runs:
+            buf.seek(0)
+            buf.truncate()
+            writer.writerow(
+                [
+                    run.dag_id,
+                    run.run_id,
+                    run.state,
+                    run.logical_date.isoformat() if run.logical_date else "",
+                    run.start_date.isoformat() if run.start_date else "",
+                    run.end_date.isoformat() if run.end_date else "",
+                    run.duration if run.duration is not None else "",
+                    run.run_type,
+                    run.triggered_by if run.triggered_by is not None else "",
+                    run.triggering_user_name or "",
+                    json.dumps(run.conf) if run.conf else "",
+                ]
+            )
+            yield buf.getvalue()
+
+    return StreamingResponse(
+        _generate_csv(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="dag_runs_{dag_id}.csv"'},
+    )
 
 
 @dag_run_router.get(

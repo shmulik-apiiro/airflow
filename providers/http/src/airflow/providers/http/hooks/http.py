@@ -324,6 +324,28 @@ class HttpHook(BaseHook):
         # This is referencing self.merged_extra, which is update by _process ...
         return self.run_and_check(session, prepped_request, self.merged_extra)
 
+    def fetch_url(self, url: str, headers: dict[str, Any] | None = None) -> bytes:
+        """
+        GET an arbitrary URL and return the raw response bytes.
+
+        Unlike :meth:`run`, which builds the target URL from the connection's base URL
+        and an endpoint suffix, this method issues a GET directly to ``url``.
+        Connection credentials, proxy settings, SSL configuration, and timeout from
+        the configured connection are still applied.
+
+        :param url: Fully-qualified URL to fetch.
+        :param headers: Optional additional request headers merged with any session-level
+            headers configured on the connection.
+        :return: Raw response body as bytes.
+        :raises AirflowException: If the server returns a non-2xx / non-3xx status code.
+        """
+        session = self.get_conn(headers=headers)
+        req = Request("GET", url, headers=headers)
+        prepped = session.prepare_request(req)
+        self.log.debug("Fetching URL: %s", url)
+        response = self.run_and_check(session, prepped, self.merged_extra)
+        return response.content
+
     def check_response(self, response: Response) -> None:
         """
         Check the status code and raise on failure.

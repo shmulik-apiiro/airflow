@@ -23,6 +23,7 @@ import logging
 import os
 import shlex
 import stat
+import subprocess
 import tempfile
 from typing import Any
 from urllib.parse import quote as urlquote
@@ -217,3 +218,42 @@ class GitHook(BaseHook):
         else:
             self.set_git_env(self.key_file)
             yield
+
+    def clone_and_resolve(self, repo_url: str, branch: str, target_dir: str) -> str:
+        """
+        Clone ``repo_url`` at ``branch`` into ``target_dir`` and return the HEAD commit SHA.
+
+        SSH authentication (key, passphrase, known-hosts, proxy) is applied from the
+        hook's connection configuration via :meth:`configure_hook_env`.  For HTTPS
+        repositories that require credentials, pass :attr:`repo_url` which already has
+        the connection's token embedded by :meth:`_process_git_auth_url`.
+
+        :param repo_url: Repository URL to clone.
+        :param branch: Branch name to check out.
+        :param target_dir: Filesystem path to clone into (must not already exist).
+        :return: Full 40-character SHA-1 of HEAD after cloning.
+        :raises AirflowException: If the clone or rev-parse command fails.
+        """
+        try:
+            with self.configure_hook_env():
+                # self.env is populated by configure_hook_env; read it here, inside the block.
+                env = {**os.environ, **self.env}
+                subprocess.run(
+                    ["git", "clone", "--branch", branch, "--single-branch", repo_url, target_dir],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+                result = subprocess.run(
+                    ["git", "-C", target_dir, "rev-parse", "HEAD"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+        except subprocess.CalledProcessError as e:
+            raise AirflowException(
+                f"Git operation failed (exit {e.returncode}): {e.stderr or e.cmd}"
+            ) from e
+        return result.stdout.strip()

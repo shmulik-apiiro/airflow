@@ -62,6 +62,14 @@ class UserResponse(BaseModel):
     changed_on: datetime | None = None
 
 
+class UserPreferencesPatchBody(StrictBaseModel):
+    """Incoming payload for updating a user's own profile preferences."""
+
+    first_name: str | None = Field(default=None, min_length=1)
+    last_name: str | None = Field(default=None, min_length=1)
+    email: str | None = Field(default=None, min_length=1)
+
+
 class UserCollectionResponse(BaseModel):
     """Response model for a collection of users."""
 
